@@ -94,8 +94,20 @@ describe('tools/call — list_topics / get_article', () => {
   it('returns markdown when the site serves it', async () => {
     const fetchImpl = vi.fn(async () => new Response('# Title\n\nBody', { headers: { 'Content-Type': 'text/markdown' } }));
     const result = await callGetArticle({ path: '/insights/icp/' }, fetchImpl);
-    expect(fetchImpl).toHaveBeenCalledWith('https://chinaready.co/insights/icp/', expect.objectContaining({ headers: expect.objectContaining({ Accept: 'text/markdown, text/plain' }) }));
+    expect(fetchImpl).toHaveBeenCalledWith('https://chinaready.co/insights/icp/', expect.objectContaining({ headers: expect.objectContaining({ Accept: 'text/markdown' }) }));
     expect(result.content[0].text).toContain('# Title');
+  });
+
+  it('falls back to readable text when the site answers HTML', async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      '<html><head><title>FAQ</title><style>x{}</style></head><body><main><h1>Questions</h1><p>Answers here.</p></main></body></html>',
+      { headers: { 'Content-Type': 'text/html' } },
+    ));
+    const result = await callGetArticle({ path: '/faq/' }, fetchImpl);
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('# FAQ');
+    expect(result.content[0].text).toContain('Answers here.');
+    expect(result.content[0].text).not.toContain('<');
   });
 });
 

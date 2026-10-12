@@ -133,13 +133,38 @@ export async function callGetArticle(args, fetchImpl = fetch) {
     return { isError: true, content: [{ type: 'text', text: 'path must be a chinaready.co site path like "/insights/china-icp-and-psb-filing-explained/".' }] };
   }
   const response = await fetchImpl(`${SITE_ORIGIN}${path}`, {
-    headers: { Accept: 'text/markdown, text/plain' },
+    headers: {
+      Accept: 'text/markdown',
+      'User-Agent': 'ChinareadyMCP/1.0 (+https://mcp.chinaready.co)',
+    },
   });
   const contentType = response.headers.get('content-type') || '';
-  if (!response.ok || !/text\/(markdown|plain)/.test(contentType)) {
-    return { isError: true, content: [{ type: 'text', text: `Could not read ${path} as Markdown (HTTP ${response.status}). Search for the exact path first.` }] };
+  if (!response.ok) {
+    return { isError: true, content: [{ type: 'text', text: `Could not read ${path} (HTTP ${response.status}). Search for the exact path first.` }] };
   }
-  const markdown = await response.text();
+  let markdown;
+  if (/text\/markdown/.test(contentType)) {
+    markdown = await response.text();
+  } else {
+    // Fallback: strip a minimal HTML shell to readable text when the zone's
+    // Markdown converter does not apply to this subrequest.
+    const html = await response.text();
+    const title = html.match(/<title>([^<]*)<\/title>/i)?.[1] || path;
+    const body = (html.match(/<main[^>]*>([\s\S]*?)<\/main>/i)?.[1]
+      || html.match(/<body[^>]*>([\s\S]*?)<\/body>/i)?.[1]
+      || html)
+      .replace(/<script[\s\S]*?<\/script>/gi, '')
+      .replace(/<style[\s\S]*?<\/style>/gi, '')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/\s+/g, ' ')
+      .trim();
+    markdown = `# ${title}\n\n${body}`;
+  }
   const clipped = markdown.length > MAX_ARTICLE_CHARS ? `${markdown.slice(0, MAX_ARTICLE_CHARS)}\n\n[truncated at ${MAX_ARTICLE_CHARS} characters]` : markdown;
   return { content: [{ type: 'text', text: `# ${SITE_ORIGIN}${path}\n\n${clipped}` }] };
 }
