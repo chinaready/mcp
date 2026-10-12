@@ -1,0 +1,141 @@
+// Copyright (c) 2026 Chinaready. All rights reserved.
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import worker, { handleRpcMessage, toolsList, callSearch, callGetArticle, callListTopics, SERVER_INFO } from '../src/index.js';
+
+function rpc(method, params, id = 1, fetchImpl) {
+  return handleRpcMessage({ jsonrpc: '2.0', id, method, params }, fetchImpl);
+}
+
+describe('initialize', () => {
+  it('returns branded serverInfo, capabilities, and instructions', async () => {
+    const reply = await rpc('initialize', { protocolVersion: '2025-06-18' });
+    expect(reply.result.serverInfo).toEqual(SERVER_INFO);
+    expect(reply.result.serverInfo.name).toBe('chinaready');
+    expect(reply.result.serverInfo.title).toBeTruthy();
+    expect(reply.result.capabilities.tools).toEqual({ listChanged: false });
+    expect(reply.result.instructions).toMatch(/cite the chinaready\.co URLs/i);
+  });
+
+  it('echoes a supported protocol version and falls back for unknown ones', async () => {
+    expect((await rpc('initialize', { protocolVersion: '2025-03-26' })).result.protocolVersion).toBe('2025-03-26');
+    expect((await rpc('initialize', { protocolVersion: '1999-01-01' })).result.protocolVersion).toBe('2025-06-18');
+  });
+});
+
+describe('tools/list', () => {
+  it('exposes three read-only tools, each with a title and annotations', async () => {
+    const reply = await rpc('tools/list', {});
+    const tools = reply.result.tools;
+    expect(tools.map((t) => t.name).sort()).toEqual(['get_article', 'list_topics', 'search']);
+    for (const tool of tools) {
+      expect(tool.title, `${tool.name} title`).toBeTruthy();
+      expect(tool.annotations, `${tool.name} annotations`).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+      expect(tool.inputSchema.type).toBe('object');
+    }
+  });
+
+  it('module export matches the RPC result', () => {
+    expect(toolsList()).toHaveLength(3);
+  });
+});
+
+describe('tools/call — search', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('dedupes chunks to ranked articles with absolute URLs', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({
+      result: {
+        chunks: [
+          { score: 0.9, text: '---\nurl: "https://chinaready.co/insights/icp/"\ntitle: "ICP explained"\ntype: "insight"\n---\nFiling takes two to four weeks end to end.' },
+          { score: 0.7, text: '---\nurl: "https://chinaready.co/insights/icp/"\ntitle: "ICP explained"\ntype: "insight"\n---\nRenewal is annual.' },
+          { score: 0.75, text: '---\nurl: "https://chinaready.co/faq/"\ntitle: "FAQ"\ntype: "faq"\n---\nGeneral questions.' },
+        ],
+      },
+    }), { headers: { 'Content-Type': 'application/json' } }));
+
+    const reply = await rpc('tools/call', { name: 'search', arguments: { query: 'icp filing' } }, 1, fetchImpl);
+    expect(fetchImpl).toHaveBeenCalledWith('https://search.chinaready.co/search', expect.objectContaining({ method: 'POST' }));
+    const text = reply.result.content[0].text;
+    expect(text).toContain('1. ICP explained');
+    expect(text).toContain('https://chinaready.co/insights/icp/');
+    expect(text).toContain('Filing takes two to four weeks');
+    expect(reply.result.isError).toBeUndefined();
+  });
+
+  it('rejects empty or oversized queries without calling upstream', async () => {
+    const fetchImpl = vi.fn();
+    expect((await handleRpcMessage({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'search', arguments: { query: '' } } }, fetchImpl)).result.isError).toBe(true);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('maps upstream failures to a clean isError result', async () => {
+    const fetchImpl = vi.fn(async () => new Response('nope', { status: 503 }));
+    const reply = await rpc('tools/call', { name: 'search', arguments: { query: 'x' } }, 1, fetchImpl);
+    expect(reply.result.isError).toBe(true);
+  });
+});
+
+describe('tools/call — list_topics / get_article', () => {
+  it('lists topics with hub URLs and example queries', async () => {
+    const text = callListTopics().content[0].text;
+    expect(text).toContain('ICP filing and licensing');
+    expect(text).toContain('https://chinaready.co/');
+  });
+
+  it('accepts only safe site paths and rejects everything else', async () => {
+    const fetchImpl = vi.fn();
+    const bad = await callGetArticle({ path: 'https://evil.example/x/' }, fetchImpl);
+    const bad2 = await callGetArticle({ path: '/../etc/passwd' }, fetchImpl);
+    expect(bad.isError).toBe(true);
+    expect(bad2.isError).toBe(true);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('returns markdown when the site serves it', async () => {
+    const fetchImpl = vi.fn(async () => new Response('# Title\n\nBody', { headers: { 'Content-Type': 'text/markdown' } }));
+    const result = await callGetArticle({ path: '/insights/icp/' }, fetchImpl);
+    expect(fetchImpl).toHaveBeenCalledWith('https://chinaready.co/insights/icp/', expect.objectContaining({ headers: expect.objectContaining({ Accept: 'text/markdown, text/plain' }) }));
+    expect(result.content[0].text).toContain('# Title');
+  });
+});
+
+describe('HTTP surface', () => {
+  it('GET returns 405, OPTIONS returns 204 with CORS', async () => {
+    const getRes = await worker.fetch(new Request('https://mcp.chinaready.co/mcp', { method: 'GET' }));
+    expect(getRes.status).toBe(405);
+    const optionsRes = await worker.fetch(new Request('https://mcp.chinaready.co/mcp', { method: 'OPTIONS' }));
+    expect(optionsRes.status).toBe(204);
+    expect(optionsRes.headers.get('Access-Control-Allow-Origin')).toBe('*');
+  });
+
+  it('POST routes JSON-RPC and notifications return 202', async () => {
+    const res = await worker.fetch(new Request('https://mcp.chinaready.co/mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'tools/list' }),
+    }));
+    expect(res.status).toBe(200);
+    const payload = await res.json();
+    expect(payload.result.tools).toHaveLength(3);
+
+    const note = await worker.fetch(new Request('https://mcp.chinaready.co/mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+    }));
+    expect(note.status).toBe(202);
+  });
+
+  it('handles JSON-RPC batches', async () => {
+    const res = await worker.fetch(new Request('https://mcp.chinaready.co/mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify([
+        { jsonrpc: '2.0', id: 1, method: 'ping' },
+        { jsonrpc: '2.0', method: 'notifications/initialized' },
+      ]),
+    }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([{ jsonrpc: '2.0', id: 1, result: {} }]);
+  });
+});
