@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Chinaready. All rights reserved.
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import worker, { handleRpcMessage, toolsList, callSearch, callGetArticle, callListTopics, SERVER_INFO } from '../src/index.js';
+import worker, { handleRpcMessage, toolsList, callSearch, callGetArticle, callListTopics, SERVER_INFO, usageLabel } from '../src/index.js';
 
 function rpc(method, params, id = 1, fetchImpl) {
   return handleRpcMessage({ jsonrpc: '2.0', id, method, params }, fetchImpl);
@@ -108,6 +108,67 @@ describe('tools/call — list_topics / get_article', () => {
     expect(result.content[0].text).toContain('# FAQ');
     expect(result.content[0].text).toContain('Answers here.');
     expect(result.content[0].text).not.toContain('<');
+  });
+});
+
+describe('usage analytics', () => {
+  function stubUsage() {
+    const points = [];
+    return { env: { USAGE: { writeDataPoint: (p) => points.push(p) } }, points };
+  }
+
+  it('classifies rpc messages into method/tool/outcome', () => {
+    expect(usageLabel({ method: 'initialize' }, { result: {} })).toEqual({ method: 'initialize', tool: '', outcome: 'ok' });
+    expect(usageLabel({ method: 'notifications/initialized' }, undefined))
+      .toEqual({ method: 'notifications/initialized', tool: '', outcome: 'notification' });
+    expect(usageLabel({ method: 'tools/call', params: { name: 'search' } }, { result: { isError: true } }))
+      .toEqual({ method: 'tools/call', tool: 'search', outcome: 'tool_error' });
+    expect(usageLabel({ method: 'tools/call', params: {} }, { result: {} }))
+      .toEqual({ method: 'tools/call', tool: 'unknown', outcome: 'ok' });
+    expect(usageLabel({ method: 'resources/list' }, { error: { code: -32601, message: 'Method not found' } }).outcome).toBe('method_not_found');
+    expect(usageLabel(null, { error: { code: -32600 } }).method).toBe('invalid');
+  });
+
+  it('writes one data point per batched message with the UA blob', async () => {
+    const { env, points } = stubUsage();
+    const res = await worker.fetch(new Request('https://mcp.chinaready.co/mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'User-Agent': 'node' },
+      body: JSON.stringify([
+        { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+        { jsonrpc: '2.0', method: 'notifications/initialized' },
+      ]),
+    }), env);
+    expect(res.status).toBe(200);
+    expect(points.map((p) => p.blobs.slice(0, 3))).toEqual([
+      ['tools/list', '', 'ok'],
+      ['notifications/initialized', '', 'notification'],
+    ]);
+    expect(points[0].doubles).toEqual([1]);
+    expect(points[0].blobs[3]).toBe('node');
+  });
+
+  it('labels tools/call with the tool name through the HTTP surface', async () => {
+    const { env, points } = stubUsage();
+    await worker.fetch(new Request('https://mcp.chinaready.co/mcp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'list_topics' } }),
+    }), env);
+    expect(points[0].blobs.slice(0, 3)).toEqual(['tools/call', 'list_topics', 'ok']);
+  });
+
+  it('records rejected methods and parse errors, and never throws without the binding', async () => {
+    // No env at all — must not throw.
+    expect((await worker.fetch(new Request('https://mcp.chinaready.co/mcp', { method: 'HEAD' }))).status).toBe(405);
+
+    const { env, points } = stubUsage();
+    await worker.fetch(new Request('https://mcp.chinaready.co/mcp', { method: 'GET', headers: { 'User-Agent': 'x'.repeat(300) } }), env);
+    expect(points[0].blobs).toEqual(['http:GET', '', 'method_not_allowed', 'x'.repeat(120)]);
+
+    const bad = await worker.fetch(new Request('https://mcp.chinaready.co/mcp', { method: 'POST', body: 'not json' }), env);
+    expect(bad.status).toBe(400);
+    expect(points[1].blobs.slice(0, 3)).toEqual(['http:POST', '', 'parse_error']);
   });
 });
 

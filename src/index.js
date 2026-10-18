@@ -219,6 +219,39 @@ const CORS_HEADERS = {
   'Access-Control-Expose-Headers': 'Mcp-Session-Id',
 };
 
+// Usage analytics (Analytics Engine dataset chinaready_mcp_usage):
+// one data point per RPC message — blobs: [method, tool, outcome, ua],
+// doubles: [1]. Method/tool names only; arguments and query content are
+// never logged.
+const UA_BLOB_MAX = 120;
+
+export function usageLabel(message, reply) {
+  if (!message || typeof message !== 'object' || typeof message.method !== 'string') {
+    return { method: 'invalid', tool: '', outcome: reply ? 'ok' : 'dropped' };
+  }
+  if (message.method.startsWith('notifications/')) {
+    return { method: message.method, tool: '', outcome: 'notification' };
+  }
+  const tool = message.method === 'tools/call'
+    ? (typeof message.params?.name === 'string' && message.params.name ? message.params.name : 'unknown')
+    : '';
+  let outcome = 'ok';
+  if (reply?.error) outcome = reply.error.code === -32601 ? 'method_not_found' : 'rpc_error';
+  else if (reply?.result?.isError) outcome = 'tool_error';
+  return { method: message.method, tool, outcome };
+}
+
+function writeUsage(env, label, ua) {
+  try {
+    env?.USAGE?.writeDataPoint?.({
+      blobs: [label.method, label.tool, label.outcome, String(ua || '').slice(0, UA_BLOB_MAX)],
+      doubles: [1],
+    });
+  } catch {
+    // Usage analytics must never break request serving.
+  }
+}
+
 function json(body, status = 200) {
   return new Response(body === undefined ? null : JSON.stringify(body), {
     status,
@@ -227,9 +260,15 @@ function json(body, status = 200) {
 }
 
 export default {
-  async fetch(request) {
-    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS_HEADERS });
+  async fetch(request, env) {
+    const ua = request.headers.get('user-agent') || '';
+
+    if (request.method === 'OPTIONS') {
+      writeUsage(env, { method: 'http:OPTIONS', tool: '', outcome: 'preflight' }, ua);
+      return new Response(null, { status: 204, headers: CORS_HEADERS });
+    }
     if (request.method !== 'POST') {
+      writeUsage(env, { method: `http:${request.method}`, tool: '', outcome: 'method_not_allowed' }, ua);
       return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'POST, OPTIONS', ...CORS_HEADERS } });
     }
 
@@ -237,6 +276,7 @@ export default {
     try {
       body = await request.json();
     } catch {
+      writeUsage(env, { method: 'http:POST', tool: '', outcome: 'parse_error' }, ua);
       return json({ jsonrpc: '2.0', id: null, error: { code: -32700, message: 'Parse error' } }, 400);
     }
 
@@ -244,12 +284,14 @@ export default {
       const replies = [];
       for (const message of body) {
         const reply = await handleRpcMessage(message);
+        writeUsage(env, usageLabel(message, reply), ua);
         if (reply) replies.push(reply);
       }
       return replies.length ? json(replies) : new Response(null, { status: 202, headers: CORS_HEADERS });
     }
 
     const reply = await handleRpcMessage(body);
+    writeUsage(env, usageLabel(body, reply), ua);
     return reply ? json(reply) : new Response(null, { status: 202, headers: CORS_HEADERS });
   },
 };
