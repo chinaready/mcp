@@ -26,7 +26,7 @@ async function query(sql) {
   });
   if (!res.ok) throw new Error(`SQL API ${res.status}: ${(await res.text()).slice(0, 300)}`);
   const payload = await res.json();
-  return { cols: payload.meta.map((m) => m.name), rows: payload.data || [] };
+  return payload.data || []; // rows are objects keyed by the SELECT aliases
 }
 
 // Coarse client classes; adjust freely — the worker stores the raw UA.
@@ -41,46 +41,46 @@ function classify(ua) {
 
 const fmt = (n) => Number(n).toLocaleString('en-US');
 
-const { rows: daily } = await query(
+const daily = await query(
   `SELECT toDateTime(intDiv(toUnixTimestamp(timestamp), 86400) * 86400) AS day, ` +
   `sum(_sample_interval) AS msgs FROM ${DATASET} ` +
   `WHERE timestamp > now() - INTERVAL '${days}' DAY GROUP BY day ORDER BY day`,
 );
 console.log(`\n== chinaready-mcp usage, last ${days} days ==`);
-for (const r of daily) console.log(`  ${r[0].toISOString().slice(0, 10)}  ${fmt(r[1])} rpc messages`);
+for (const r of daily) console.log(`  ${String(r.day).slice(0, 10)}  ${fmt(r.msgs)} rpc messages`);
 
-const { rows: funnel } = await query(
+const funnel = await query(
   `SELECT blob1 AS method, blob3 AS outcome, sum(_sample_interval) AS hits FROM ${DATASET} ` +
   `WHERE timestamp > now() - INTERVAL '${days}' DAY AND blob1 NOT LIKE 'http:%' ` +
   `GROUP BY method, outcome ORDER BY hits DESC`,
 );
 console.log(`\n== RPC funnel (method x outcome) ==`);
-for (const [method, outcome, hits] of funnel) console.log(`  ${fmt(hits).padStart(8)}  ${method}  [${outcome}]`);
+for (const r of funnel) console.log(`  ${fmt(r.hits).padStart(8)}  ${r.method}  [${r.outcome}]`);
 
-const { rows: tools } = await query(
+const tools = await query(
   `SELECT blob2 AS tool, blob3 AS outcome, sum(_sample_interval) AS hits FROM ${DATASET} ` +
   `WHERE timestamp > now() - INTERVAL '${days}' DAY AND blob1 = 'tools/call' ` +
   `GROUP BY tool, outcome ORDER BY hits DESC`,
 );
 console.log(`\n== tools/call by tool ==`);
 if (!tools.length) console.log('  (no tool calls yet)');
-for (const [tool, outcome, hits] of tools) console.log(`  ${fmt(hits).padStart(8)}  ${tool}  [${outcome}]`);
+for (const r of tools) console.log(`  ${fmt(r.hits).padStart(8)}  ${r.tool}  [${r.outcome}]`);
 
-const { rows: clients } = await query(
+const clients = await query(
   `SELECT blob4 AS ua, sum(_sample_interval) AS hits FROM ${DATASET} ` +
   `WHERE timestamp > now() - INTERVAL '${days}' DAY AND blob1 = 'tools/call' ` +
   `GROUP BY ua ORDER BY hits DESC LIMIT 20`,
 );
 console.log(`\n== tools/call by client (who actually invokes tools) ==`);
 if (!clients.length) console.log('  (no tool calls yet)');
-for (const [ua, hits] of clients) console.log(`  ${fmt(hits).padStart(8)}  ${classify(ua)}  ${(ua || '(empty)').slice(0, 80)}`);
+for (const r of clients) console.log(`  ${fmt(r.hits).padStart(8)}  ${classify(r.ua)}  ${(r.ua || '(empty)').slice(0, 80)}`);
 
-const { rows: uaAll } = await query(
+const uaAll = await query(
   `SELECT blob4 AS ua, sum(_sample_interval) AS hits FROM ${DATASET} ` +
   `WHERE timestamp > now() - INTERVAL '${days}' DAY GROUP BY ua ORDER BY hits DESC LIMIT 20`,
 );
 const byClass = {};
-for (const [ua, hits] of uaAll) byClass[classify(ua)] = (byClass[classify(ua)] || 0) + Number(hits);
+for (const r of uaAll) byClass[classify(r.ua)] = (byClass[classify(r.ua)] || 0) + Number(r.hits);
 const total = Object.values(byClass).reduce((a, b) => a + b, 0) || 1;
 console.log(`\n== all traffic by client class (top-20 UAs sampled) ==`);
 for (const [c, n] of Object.entries(byClass).sort((a, b) => b[1] - a[1])) {
