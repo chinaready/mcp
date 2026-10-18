@@ -1,3 +1,9 @@
 name = "chinaready-mcp"
 main = "src/index.js"
 compatibility_date = "2026-10-01"
+
+# Usage tracking: one data point per RPC message. Query with scripts/usage.mjs
+# or the Analytics Engine SQL API. Retention ~90 days, no query content logged.
+[[analytics_engine_datasets]]
+binding = "USAGE"
+dataset = "chinaready_mcp_usage"

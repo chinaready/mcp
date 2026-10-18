@@ -63,6 +63,34 @@ The server is a thin stateless proxy over Chinaready's public retrieval API
 variables. `get_article` only fetches `chinaready.co` pages it has validated
 as safe site paths.
 
+## Usage tracking
+
+Every RPC message writes one data point to the `chinaready_mcp_usage`
+Analytics Engine dataset (blobs: `method`, `tool`, `outcome`, truncated `ua`;
+retention ~90 days). Method and tool names only — arguments and query content
+are never logged.
+
+```bash
+CLOUDFLARE_API_TOKEN=… CLOUDFLARE_ACCOUNT_ID=… npm run usage        # last 7 days
+CLOUDFLARE_API_TOKEN=… CLOUDFLARE_ACCOUNT_ID=… npm run usage 30     # last 30 days
+```
+
+Prints the daily volume, the RPC funnel (`initialize` → `tools/list` →
+`tools/call`), tool-call breakdown with error outcomes, and a client split
+(sdk / probe-bot / browser) so real usage can be told apart from the MCP
+directory liveness bots. The token needs *Analytics Engine Read*.
+
+Raw queries go through the [Analytics Engine SQL
+API](https://developers.cloudflare.com/analytics/analytics-engine/sql-api/)
+(`POST /accounts/{account}/analytics_engine/sql`):
+
+```sql
+SELECT blob2 AS tool, sum(_sample_interval) AS hits
+FROM chinaready_mcp_usage
+WHERE timestamp > now() - INTERVAL '7' DAY AND blob1 = 'tools/call'
+GROUP BY tool ORDER BY hits DESC
+```
+
 ## License
 
 [MIT](./LICENSE)
