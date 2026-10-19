@@ -1,5 +1,7 @@
 # Chinaready MCP Server
 
+[![Chinaready China Market-Entry Search MCP connector – tool definition quality and endpoint health on Glama](https://glama.ai/mcp/connectors/co.chinaready/search/badges/score.svg)](https://glama.ai/mcp/connectors/co.chinaready/search)
+
 Remote MCP server for **[chinaready.co](https://chinaready.co)** — the practical guide for Western SaaS, app, and game teams entering Mainland China. Ask about ICP filing and licensing, app-store and game publishing, China cloud regions (AWS China, Azure China, Alibaba Cloud), payments, and compliance; every answer cites its source page.
 
 - **Endpoint:** `https://mcp.chinaready.co/mcp` (Streamable HTTP, stateless)
