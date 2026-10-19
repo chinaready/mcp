@@ -2,6 +2,8 @@
 
 [![Chinaready China Market-Entry Search MCP connector – tool definition quality and endpoint health on Glama](https://glama.ai/mcp/connectors/co.chinaready/search/badges/score.svg)](https://glama.ai/mcp/connectors/co.chinaready/search)
 
+<a href="https://www.producthunt.com/products/chinaready-mcp?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-chinaready-mcp"><picture><source media="(prefers-color-scheme: dark)" srcset="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1281511&amp;theme=dark"><img alt="Chinaready MCP - Let your AI cite real sources on China market entry | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1281511&amp;theme=light"></picture></a>
+
 Remote MCP server for **[chinaready.co](https://chinaready.co)** — the practical guide for Western SaaS, app, and game teams entering Mainland China. Ask about ICP filing and licensing, app-store and game publishing, China cloud regions (AWS China, Azure China, Alibaba Cloud), payments, and compliance; every answer cites its source page.
 
 - **Endpoint:** `https://mcp.chinaready.co/mcp` (Streamable HTTP, stateless)
