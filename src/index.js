@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Chinaready. All rights reserved.
 // Stateless remote MCP server (Streamable HTTP, JSON responses) wrapping the
-// public Chinaready retrieval API, plus an optional grounded `ask` generation
-// tool (DeepSeek via Cloudflare AI Gateway) configured through worker secrets.
+// public Chinaready retrieval API, plus a grounded `ask` tool proxied through
+// the site's Ask AI endpoint (service secret in worker env).
 
 export const SERVER_INFO = {
   name: 'chinaready',
@@ -144,25 +144,18 @@ export async function callSearch(args, fetchImpl = fetch) {
 }
 
 // ---------------------------------------------------------------------------
-// ask — grounded generation (retrieval + DeepSeek via Cloudflare AI Gateway).
-// Mirrors the site Ask AI pipeline (chinaready.co /api/assistant/chat):
-// same system prompt, same model, same low-match guard. Configured through
-// worker secrets: DEEPSEEK_API_KEY, CLOUDFLARE_ACCOUNT_ID (or CF_ACCOUNT_ID),
-// AI_GATEWAY_ID, optional AI_GATEWAY_AUTH_TOKEN, optional
-// ASSISTANT_MIN_SCORE (default 0.25) and ASSISTANT_RATE_LIMIT /
-// ASSISTANT_RATE_WINDOW_SECONDS (default 30 per 10 minutes per client IP).
+// ask — grounded natural-language answer, proxied through the site's public
+// Ask AI endpoint (chinaready.co /api/assistant/chat): retrieval + DeepSeek
+// generation + low-match guard all live there, so the model, prompts, and
+// DeepSeek credentials stay in one place. This worker authenticates with a
+// shared service secret (env ASSISTANT_SERVICE_SECRET) and forwards the real
+// client IP via X-Client-IP so the site's per-IP rate limit keys on the
+// actual caller. A local allowAsk limiter adds defense in depth.
 // ---------------------------------------------------------------------------
 
-const ASK_SYSTEM_PROMPT = 'Answer only from the supplied files. English only. Not legal advice. No prices or promises to take work. Cite only provided URLs.';
-const ASK_CHUNKS = 18;
-const ASK_MAX_CITATIONS = 5;
+const CHAT_ENDPOINT = 'https://chinaready.co/api/assistant/chat';
 const ASK_QUERY_MAX = 400;
-const CF_ID = /^[A-Za-z0-9_-]{6,64}$/; // account ids and gateway ids, defensively
-
-function askMinScore(env) {
-  const parsed = Number.parseFloat(env?.ASSISTANT_MIN_SCORE);
-  return Number.isFinite(parsed) && parsed > 0 && parsed < 1 ? parsed : 0.25;
-}
+const ASK_MAX_CITATIONS = 5;
 
 function askLimit(env) {
   const limit = Number.parseInt(env?.ASSISTANT_RATE_LIMIT, 10);
@@ -194,55 +187,30 @@ export async function allowAsk(env, ip, scope = 'ask') {
   return true;
 }
 
-function askGatewayUrl(env) {
-  const accountId = env?.CLOUDFLARE_ACCOUNT_ID || env?.CF_ACCOUNT_ID || '';
-  const gatewayId = env?.AI_GATEWAY_ID || '';
-  if (!CF_ID.test(accountId) || !CF_ID.test(gatewayId)) return null;
-  return `https://gateway.ai.cloudflare.com/v1/${accountId}/${gatewayId}/deepseek/chat/completions`;
-}
+async function askViaSite(env, { query, ip, fetchImpl }) {
+  const secret = typeof env?.ASSISTANT_SERVICE_SECRET === 'string' ? env.ASSISTANT_SERVICE_SECRET.trim() : '';
+  if (!secret) return { configured: false };
 
-function askGatewayHeaders(env, apiKey) {
-  const headers = {
-    Authorization: `Bearer ${apiKey}`,
-    'Content-Type': 'application/json',
-  };
-  const gatewayToken = typeof env?.AI_GATEWAY_AUTH_TOKEN === 'string' ? env.AI_GATEWAY_AUTH_TOKEN.trim() : '';
-  if (gatewayToken) headers['cf-aig-authorization'] = `Bearer ${gatewayToken}`;
-  return headers;
-}
-
-function askUserPrompt(question, metas) {
-  const files = metas.map((m) => `<file url="${m.url}">${m.text}</file>`).join('\n');
-  return ['<files>', files, '</files>', `<latest-question>${question}</latest-question>`].join('\n');
-}
-
-async function askGenerate(env, { question, metas, fetchImpl }) {
-  const apiKey = env?.DEEPSEEK_API_KEY || env?.DS_FLASH_KEY || '';
-  const url = askGatewayUrl(env);
-  if (!apiKey || !url) {
-    return { configured: false };
-  }
-  const response = await fetchImpl(url, {
+  const response = await fetchImpl(CHAT_ENDPOINT, {
     method: 'POST',
-    headers: askGatewayHeaders(env, apiKey),
-    body: JSON.stringify({
-      model: 'deepseek-v4-flash',
-      thinking: { type: 'disabled' },
-      messages: [
-        { role: 'system', content: ASK_SYSTEM_PROMPT },
-        { role: 'user', content: askUserPrompt(question, metas) },
-      ],
-    }),
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${secret}`,
+      'X-Client-IP': ip || 'unknown',
+    },
+    body: JSON.stringify({ messages: [{ role: 'user', content: query }] }),
   });
   if (!response.ok) {
     return { configured: true, status: response.status };
   }
   const payload = await response.json().catch(() => null);
-  const text = payload?.choices?.[0]?.message?.content;
-  if (typeof text !== 'string' || !text.trim()) {
-    return { configured: true, status: 502 };
+  if (payload?.action === 'answer' && typeof payload.text === 'string' && payload.text.trim()) {
+    return { configured: true, answer: payload.text.trim(), sources: Array.isArray(payload.sources) ? payload.sources : [] };
   }
-  return { configured: true, answer: text.trim() };
+  if (payload?.action === 'contact_form') {
+    return { configured: true, contact: true };
+  }
+  return { configured: true, status: 502 };
 }
 
 export async function callAsk(args, ctx = {}) {
@@ -256,52 +224,28 @@ export async function callAsk(args, ctx = {}) {
     return { isError: true, content: [{ type: 'text', text: 'Rate limit reached. Try again in a few minutes.' }] };
   }
 
-  let chunks;
-  try {
-    const response = await fetchImpl(SEARCH_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query, limit: ASK_CHUNKS }),
-    });
-    if (response.ok) {
-      chunks = (await response.json().catch(() => null))?.result?.chunks ?? [];
-    }
-  } catch {
-    chunks = [];
+  const outcome = await askViaSite(env, { query, ip, fetchImpl });
+  if (!outcome.configured) {
+    return { isError: true, content: [{ type: 'text', text: 'Generation is not configured on this deployment (missing ASSISTANT_SERVICE_SECRET); use `search` instead.' }] };
   }
-
-  // Article-level metas, deduped by URL, best score first.
-  const byUrl = new Map();
-  for (const chunk of chunks) {
-    const meta = chunkMeta(chunk);
-    if (!meta.url) continue;
-    const prev = byUrl.get(meta.url);
-    if (!prev || meta.score > prev.score) byUrl.set(meta.url, meta);
-  }
-  const metas = [...byUrl.values()].sort((a, b) => b.score - a.score);
-  const bestScore = metas.length ? metas[0].score : -Infinity;
-  const minScore = askMinScore(env);
-
-  if (!metas.length || bestScore < minScore) {
+  if (outcome.contact) {
     return {
       content: [{ type: 'text', text: 'No chinaready.co page matches this question confidently enough to answer. Try `search` for raw excerpts, or ask Chinaready directly at https://chinaready.co/contact/.' }],
       structuredContent: { answer: null, citations: [], matched: false },
     };
   }
-
-  const citations = metas.slice(0, ASK_MAX_CITATIONS).map((m) => ({ title: m.title, url: m.url }));
-  const generated = await askGenerate(env, { question: query, metas: metas.slice(0, ASK_MAX_CITATIONS), fetchImpl });
-  if (!generated.configured) {
-    return { isError: true, content: [{ type: 'text', text: 'Generation is not configured on this deployment (missing DEEPSEEK_API_KEY or gateway settings); use `search` instead.' }] };
-  }
-  if (!generated.answer) {
-    return { isError: true, content: [{ type: 'text', text: `Generation upstream unavailable (HTTP ${generated.status ?? 500}). Retry shortly or use \`search\`.` }] };
+  if (!outcome.answer) {
+    return { isError: true, content: [{ type: 'text', text: `Answer generation unavailable (HTTP ${outcome.status ?? 500}). Retry shortly or use \`search\`.` }] };
   }
 
+  const citations = outcome.sources
+    .filter((source) => typeof source?.url === 'string' && /^https:\/\/chinaready\.co\//.test(source.url))
+    .slice(0, ASK_MAX_CITATIONS)
+    .map((source) => ({ title: typeof source.title === 'string' && source.title ? source.title : source.url, url: source.url }));
   const sourceLines = citations.map((c, i) => `${i + 1}. ${c.title} — ${c.url}`);
   return {
-    content: [{ type: 'text', text: `${generated.answer}\n\nSources:\n${sourceLines.join('\n')}` }],
-    structuredContent: { answer: generated.answer, citations, matched: true },
+    content: [{ type: 'text', text: `${outcome.answer}\n\nSources:\n${sourceLines.join('\n')}` }],
+    structuredContent: { answer: outcome.answer, citations, matched: true },
   };
 }
 
