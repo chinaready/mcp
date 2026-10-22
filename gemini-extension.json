@@ -1,0 +1,9 @@
+{
+  "name": "chinaready",
+  "version": "1.0.1",
+  "mcpServers": {
+    "chinaready": {
+      "httpUrl": "https://mcp.chinaready.co/mcp"
+    }
+  }
+}
