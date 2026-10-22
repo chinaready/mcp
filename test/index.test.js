@@ -1,6 +1,6 @@
 // Copyright (c) 2026 Chinaready. All rights reserved.
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import worker, { handleRpcMessage, toolsList, callSearch, callGetArticle, callListTopics, SERVER_INFO, usageLabel } from '../src/index.js';
+import worker, { handleRpcMessage, toolsList, callSearch, callGetArticle, callListTopics, htmlToText, SERVER_INFO, usageLabel } from '../src/index.js';
 
 function rpc(method, params, id = 1, fetchImpl) {
   return handleRpcMessage({ jsonrpc: '2.0', id, method, params }, fetchImpl);
@@ -111,6 +111,29 @@ describe('tools/call — list_topics / get_article', () => {
   });
 });
 
+describe('htmlToText (HTML fallback extraction)', () => {
+  it('removes scripts, styles, noscript blocks, and comments entirely', () => {
+    const text = htmlToText('<body><main><!-- note --><script>alert(1)</script><style>a{}</style><noscript>off</noscript><p>Keep.</p></main></body>');
+    expect(text).toBe('Keep.');
+  });
+
+  it('decodes named and numeric entities exactly once', () => {
+    expect(htmlToText('A &amp; B')).toBe('A & B');
+    expect(htmlToText('&amp;lt; stays literal')).toBe('&lt; stays literal');
+    expect(htmlToText('dash &#8212; dash &#x2014; done')).toBe('dash — dash — done');
+    expect(htmlToText('&apos;quoted&apos;')).toBe("'quoted'");
+  });
+
+  it('drops invalid or surrogate code points instead of throwing', () => {
+    expect(htmlToText('&#0;&#x110000;&#xD800;ok')).toBe('ok');
+  });
+
+  it('keeps block boundaries as line breaks instead of one blob', () => {
+    const text = htmlToText('<main><h1>Head</h1><p>One.</p><p>Two.<br/>Split.</p></main>');
+    expect(text).toBe('Head\nOne.\nTwo.\nSplit.');
+  });
+});
+
 describe('usage analytics', () => {
   function stubUsage() {
     const points = [];
@@ -173,12 +196,14 @@ describe('usage analytics', () => {
 });
 
 describe('HTTP surface', () => {
-  it('GET returns 405, OPTIONS returns 204 with CORS', async () => {
+  it('GET returns 405 without CORS; OPTIONS preflight carries scoped CORS', async () => {
     const getRes = await worker.fetch(new Request('https://mcp.chinaready.co/mcp', { method: 'GET' }));
     expect(getRes.status).toBe(405);
+    expect(getRes.headers.get('Access-Control-Allow-Origin')).toBeNull();
     const optionsRes = await worker.fetch(new Request('https://mcp.chinaready.co/mcp', { method: 'OPTIONS' }));
     expect(optionsRes.status).toBe(204);
     expect(optionsRes.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(optionsRes.headers.get('Access-Control-Allow-Methods')).toBe('POST, OPTIONS');
   });
 
   it('POST routes JSON-RPC and notifications return 202', async () => {

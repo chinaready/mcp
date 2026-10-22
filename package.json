@@ -1,6 +1,6 @@
 {
   "name": "@chinaready/mcp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Remote MCP server for chinaready.co — search China market-entry guides, browse topics, read articles.",
   "type": "module",
   "main": "src/index.js",
@@ -11,6 +11,6 @@
   },
   "license": "MIT",
   "devDependencies": {
-    "vitest": "^3.2.4"
+    "vitest": "^5.0.5"
   }
 }
