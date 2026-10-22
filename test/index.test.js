@@ -26,7 +26,7 @@ describe('tools/list', () => {
   it('exposes three read-only tools, each with a title and annotations', async () => {
     const reply = await rpc('tools/list', {});
     const tools = reply.result.tools;
-    expect(tools.map((t) => t.name).sort()).toEqual(['get_article', 'list_topics', 'search']);
+    expect(tools.map((t) => t.name).sort()).toEqual(['ask', 'get_article', 'list_topics', 'search']);
     for (const tool of tools) {
       expect(tool.title, `${tool.name} title`).toBeTruthy();
       expect(tool.annotations, `${tool.name} annotations`).toMatchObject({ readOnlyHint: true, destructiveHint: false });
@@ -35,7 +35,7 @@ describe('tools/list', () => {
   });
 
   it('module export matches the RPC result', () => {
-    expect(toolsList()).toHaveLength(3);
+    expect(toolsList()).toHaveLength(4);
   });
 });
 
@@ -214,7 +214,7 @@ describe('HTTP surface', () => {
     }));
     expect(res.status).toBe(200);
     const payload = await res.json();
-    expect(payload.result.tools).toHaveLength(3);
+    expect(payload.result.tools).toHaveLength(4);
 
     const note = await worker.fetch(new Request('https://mcp.chinaready.co/mcp', {
       method: 'POST',
