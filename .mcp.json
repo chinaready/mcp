@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "chinaready": {
+      "type": "http",
+      "url": "https://mcp.chinaready.co/mcp"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "chinaready",
+  "version": "1.0.1",
+  "description": "Chinaready China Market-Entry Search — read-only MCP server over chinaready.co: ICP filing and licensing, app-store publishing, China cloud regions, payments, compliance. Every answer cites its source URL.",
+  "author": {
+    "name": "Chinaready",
+    "url": "https://chinaready.co"
+  },
+  "homepage": "https://chinaready.co/docs/api/",
+  "repository": "https://github.com/chinaready/mcp",
+  "license": "MIT",
+  "keywords": [
+    "mcp",
+    "china",
+    "icp-filing",
+    "market-entry",
+    "compliance",
+    "search"
+  ],
+  "mcpServers": "./.mcp.json"
+}
