@@ -213,6 +213,22 @@ async function askViaSite(env, { query, ip, fetchImpl }) {
   return { configured: true, status: 502 };
 }
 
+// The site chat endpoint returns site-relative source paths
+// ("/insights/…/"); accept both shapes and always emit absolute
+// chinaready.co URLs for programmatic clients.
+function citationFromSource(source) {
+  const raw = typeof source?.url === 'string' ? source.url.trim() : '';
+  let url = null;
+  if (/^https:\/\/chinaready\.co(\/|$)/.test(raw)) {
+    url = raw;
+  } else if (/^\/[a-z0-9-]/i.test(raw)) {
+    url = `https://chinaready.co${raw}`;
+  }
+  if (!url) return null;
+  const title = typeof source.title === 'string' && source.title.trim() ? source.title.trim() : url;
+  return { title, url };
+}
+
 export async function callAsk(args, ctx = {}) {
   const { env, ip, fetchImpl = fetch } = ctx;
   const query = String(args?.query ?? '').trim();
@@ -239,9 +255,9 @@ export async function callAsk(args, ctx = {}) {
   }
 
   const citations = outcome.sources
-    .filter((source) => typeof source?.url === 'string' && /^https:\/\/chinaready\.co\//.test(source.url))
-    .slice(0, ASK_MAX_CITATIONS)
-    .map((source) => ({ title: typeof source.title === 'string' && source.title ? source.title : source.url, url: source.url }));
+    .map(citationFromSource)
+    .filter(Boolean)
+    .slice(0, ASK_MAX_CITATIONS);
   const sourceLines = citations.map((c, i) => `${i + 1}. ${c.title} — ${c.url}`);
   return {
     content: [{ type: 'text', text: `${outcome.answer}\n\nSources:\n${sourceLines.join('\n')}` }],

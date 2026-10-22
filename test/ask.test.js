@@ -32,7 +32,8 @@ const ANSWER = {
   action: 'answer',
   text: 'ICP filing generally takes **two to four weeks** end to end.',
   sources: [
-    { url: 'https://chinaready.co/insights/icp/', title: 'ICP explained', type: 'insight' },
+    // Site chat returns site-relative paths; citations must come out absolute.
+    { url: '/insights/icp/', title: 'ICP explained', type: 'insight' },
     { url: 'https://chinaready.co/insights/cloud/', title: 'Cloud guide', type: 'insight' },
   ],
 };
