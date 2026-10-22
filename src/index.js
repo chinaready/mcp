@@ -4,7 +4,7 @@
 
 export const SERVER_INFO = {
   name: 'chinaready',
-  version: '1.0.0',
+  version: '1.0.1',
   title: 'Chinaready China Market-Entry Search',
 };
 
@@ -127,6 +127,44 @@ export function callListTopics() {
 
 const SAFE_PATH = /^\/[a-z0-9-]+(\/[a-z0-9-]+)*\/$/;
 
+// Text extraction for the HTML fallback: drop non-content blocks, convert
+// block-level closers to newlines, then decode entities — &amp; last, so
+// escaped markup like "&amp;lt;" survives as the literal text "&lt;".
+function decodeCodePoint(value) {
+  const cp = Number(value);
+  if (!Number.isInteger(cp) || cp < 1 || cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return '';
+  try {
+    return String.fromCodePoint(cp);
+  } catch {
+    return '';
+  }
+}
+
+export function htmlToText(html) {
+  return (html.match(/<main[^>]*>([\s\S]*?)<\/main>/i)?.[1]
+    || html.match(/<body[^>]*>([\s\S]*?)<\/body>/i)?.[1]
+    || html)
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<noscript[\s\S]*?<\/noscript>/gi, '')
+    .replace(/<\/(?:p|h[1-6]|li|tr|blockquote|pre|div|section)>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => decodeCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec) => decodeCodePoint(dec))
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;/gi, "'")
+    .replace(/&amp;/gi, '&')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n[ \t]+/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 export async function callGetArticle(args, fetchImpl = fetch) {
   const path = String(args?.path ?? '').trim();
   if (!SAFE_PATH.test(path) || path.length > 120) {
@@ -149,21 +187,9 @@ export async function callGetArticle(args, fetchImpl = fetch) {
     // Fallback: strip a minimal HTML shell to readable text when the zone's
     // Markdown converter does not apply to this subrequest.
     const html = await response.text();
-    const title = html.match(/<title>([^<]*)<\/title>/i)?.[1] || path;
-    const body = (html.match(/<main[^>]*>([\s\S]*?)<\/main>/i)?.[1]
-      || html.match(/<body[^>]*>([\s\S]*?)<\/body>/i)?.[1]
-      || html)
-      .replace(/<script[\s\S]*?<\/script>/gi, '')
-      .replace(/<style[\s\S]*?<\/style>/gi, '')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/&nbsp;/g, ' ')
-      .replace(/&amp;/g, '&')
-      .replace(/&lt;/g, '<')
-      .replace(/&gt;/g, '>')
-      .replace(/&quot;/g, '"')
-      .replace(/\s+/g, ' ')
-      .trim();
-    markdown = `# ${title}\n\n${body}`;
+    const rawTitle = html.match(/<title>([^<]*)<\/title>/i)?.[1] || '';
+    const title = rawTitle ? htmlToText(rawTitle) : path;
+    markdown = `# ${title}\n\n${htmlToText(html)}`;
   }
   const clipped = markdown.length > MAX_ARTICLE_CHARS ? `${markdown.slice(0, MAX_ARTICLE_CHARS)}\n\n[truncated at ${MAX_ARTICLE_CHARS} characters]` : markdown;
   return { content: [{ type: 'text', text: `# ${SITE_ORIGIN}${path}\n\n${clipped}` }] };
@@ -212,9 +238,14 @@ export async function handleRpcMessage(message, fetchImpl = fetch) {
   }
 }
 
+// CORS is deliberately open (*) but scoped to the MCP protocol surface
+// (POST requests and their preflight): this is a public, read-only,
+// unauthenticated server and browser-based MCP clients are supported
+// consumers. Rejected methods get no CORS headers, and GET is not
+// advertised because the worker never serves it.
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Accept, Mcp-Session-Id, Mcp-Protocol-Version, Last-Event-ID',
   'Access-Control-Expose-Headers': 'Mcp-Session-Id',
 };
@@ -269,7 +300,7 @@ export default {
     }
     if (request.method !== 'POST') {
       writeUsage(env, { method: `http:${request.method}`, tool: '', outcome: 'method_not_allowed' }, ua);
-      return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'POST, OPTIONS', ...CORS_HEADERS } });
+      return new Response('Method Not Allowed', { status: 405, headers: { Allow: 'POST, OPTIONS' } });
     }
 
     let body;
