@@ -138,3 +138,27 @@ describe('tools/call — ask', () => {
     expect(reply.result.structuredContent.matched).toBe(true);
   });
 });
+
+describe('tools/call — ask strips model-authored trailing sources', () => {
+  it('removes a trailing Sources block from structuredContent but keeps text output self-contained', async () => {
+    const fetchImpl = makeSiteChat([{
+      action: 'answer',
+      text: 'ICP filing takes about a month.\n\nSources:\n1. https://chinaready.co/insights/icp/\n2. https://chinaready.co/insights/dns/',
+      sources: [{ url: '/insights/icp/', title: 'ICP explained' }],
+    }]);
+    const result = await callAsk({ query: 'q' }, CTX(fetchImpl));
+    expect(result.structuredContent.answer).toBe('ICP filing takes about a month.');
+    // The plain-text representation still carries its own Sources block.
+    expect(result.content[0].text).toContain('Sources:');
+  });
+
+  it('leaves answers without a trailing block untouched', async () => {
+    const fetchImpl = makeSiteChat([{
+      action: 'answer',
+      text: 'Answer with a list:\n- one\n- two',
+      sources: [],
+    }]);
+    const result = await callAsk({ query: 'q' }, CTX(fetchImpl));
+    expect(result.structuredContent.answer).toBe('Answer with a list:\n- one\n- two');
+  });
+});

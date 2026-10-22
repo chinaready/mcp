@@ -187,6 +187,35 @@ export async function allowAsk(env, ip, scope = 'ask') {
   return true;
 }
 
+// The generation model sometimes closes its answer with its own "Sources:"
+// list even though citations travel separately in structuredContent — strip
+// that trailing block so clients never render two source sections.
+function stripTrailingSources(text) {
+  const raw = String(text);
+  const lines = raw.split('\n');
+  const isHeader = (line) =>
+    /^(?:sources?|citations?|references?)\s*:?\s*$/i.test(line.replace(/[*_]/g, '').trim());
+  const isListOrURL = (line) => {
+    const trimmed = line.trim();
+    if (!trimmed) return false;
+    if (/^https?:\/\/\S+$/.test(trimmed)) return true;
+    return /^(?:[-*•·]|\d{1,2}[.)])\s+/.test(trimmed);
+  };
+  while (lines.length) {
+    const last = lines[lines.length - 1];
+    if (isHeader(last)) {
+      lines.pop();
+      return lines.join('\n').trim();
+    }
+    if (!last.trim() || isListOrURL(last)) {
+      lines.pop();
+      continue;
+    }
+    return raw;
+  }
+  return raw;
+}
+
 async function askViaSite(env, { query, ip, fetchImpl }) {
   const secret = typeof env?.ASSISTANT_SERVICE_SECRET === 'string' ? env.ASSISTANT_SERVICE_SECRET.trim() : '';
   if (!secret) return { configured: false };
@@ -261,7 +290,7 @@ export async function callAsk(args, ctx = {}) {
   const sourceLines = citations.map((c, i) => `${i + 1}. ${c.title} — ${c.url}`);
   return {
     content: [{ type: 'text', text: `${outcome.answer}\n\nSources:\n${sourceLines.join('\n')}` }],
-    structuredContent: { answer: outcome.answer, citations, matched: true },
+    structuredContent: { answer: stripTrailingSources(outcome.answer), citations, matched: true },
   };
 }
 
