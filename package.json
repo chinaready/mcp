@@ -1,7 +1,7 @@
 {
   "name": "@chinaready/mcp",
-  "version": "1.0.1",
-  "description": "Remote MCP server for chinaready.co — search China market-entry guides, browse topics, read articles.",
+  "version": "1.1.0",
+  "description": "Remote MCP server for chinaready.co — grounded answers, search, topics, and full articles for China market entry.",
   "type": "module",
   "main": "src/index.js",
   "scripts": {

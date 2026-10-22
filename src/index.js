@@ -1,16 +1,17 @@
 // Copyright (c) 2026 Chinaready. All rights reserved.
 // Stateless remote MCP server (Streamable HTTP, JSON responses) wrapping the
-// public Chinaready retrieval API. No bindings, no secrets — deploy anywhere.
+// public Chinaready retrieval API, plus a grounded `ask` tool proxied through
+// the site's Ask AI endpoint (service secret in worker env).
 
 export const SERVER_INFO = {
   name: 'chinaready',
-  version: '1.0.1',
+  version: '1.1.0',
   title: 'Chinaready China Market-Entry Search',
 };
 
 export const INSTRUCTIONS =
   'Search and read chinaready.co — the practical guide for Western SaaS, app, and game teams entering Mainland China. ' +
-  'Use `search` for any question about ICP filing and licensing, app-store and game publishing, China cloud regions, payments, or compliance; ' +
+  'Use `ask` for a grounded natural-language answer with cited chinaready.co sources; `search` for raw ranked excerpts; ' +
   '`list_topics` to see what the corpus covers; `get_article` to read a full page. Always cite the chinaready.co URLs included in results.';
 
 const SEARCH_ENDPOINT = 'https://search.chinaready.co/search';
@@ -34,6 +35,20 @@ const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: 
 
 export function toolsList() {
   return [
+    {
+      name: 'ask',
+      title: 'Ask Chinaready (grounded answer)',
+      description:
+        'Grounded natural-language answer over the chinaready.co corpus (retrieval + generation), with the source articles attached as citations. Replies in English. Falls back to a contact suggestion when no page matches confidently.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'The question, e.g. "Do I need an ICP license to sell SaaS in China?".' },
+        },
+        required: ['query'],
+      },
+      annotations: { ...READ_ONLY, idempotentHint: false },
+    },
     {
       name: 'search',
       title: 'Search Chinaready guides',
@@ -115,7 +130,139 @@ export async function callSearch(args, fetchImpl = fetch) {
   const lines = [...seen.values()]
     .sort((a, b) => b.score - a.score)
     .map((m, i) => `${i + 1}. ${m.title}\n   ${m.url} (relevance ${m.score.toFixed(2)})\n   ${snippet(m.text)}`);
-  return { content: [{ type: 'text', text: `Top matches for "${query}":\n\n${lines.join('\n\n')}\n\nCite the URLs above; read the full page with get_article.` }] };
+  return {
+    content: [{ type: 'text', text: `Top matches for "${query}":\n\n${lines.join('\n\n')}\n\nCite the URLs above; read the full page with get_article.` }],
+    structuredContent: {
+      results: [...seen.values()].sort((a, b) => b.score - a.score).map((m) => ({
+        title: m.title,
+        url: m.url,
+        snippet: snippet(m.text),
+        relevance: Number(m.score.toFixed(2)),
+      })),
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// ask — grounded natural-language answer, proxied through the site's public
+// Ask AI endpoint (chinaready.co /api/assistant/chat): retrieval + DeepSeek
+// generation + low-match guard all live there, so the model, prompts, and
+// DeepSeek credentials stay in one place. This worker authenticates with a
+// shared service secret (env ASSISTANT_SERVICE_SECRET) and forwards the real
+// client IP via X-Client-IP so the site's per-IP rate limit keys on the
+// actual caller. A local allowAsk limiter adds defense in depth.
+// ---------------------------------------------------------------------------
+
+const CHAT_ENDPOINT = 'https://chinaready.co/api/assistant/chat';
+const ASK_QUERY_MAX = 400;
+const ASK_MAX_CITATIONS = 5;
+
+function askLimit(env) {
+  const limit = Number.parseInt(env?.ASSISTANT_RATE_LIMIT, 10);
+  return Number.isFinite(limit) && limit > 0 ? limit : 30;
+}
+
+function askWindowSeconds(env) {
+  const seconds = Number.parseInt(env?.ASSISTANT_RATE_WINDOW_SECONDS, 10);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds : 600;
+}
+
+// Per client-IP sliding-window counter over the Workers Cache API — same
+// mechanism as the site assistant. In tests (no `caches` global) an
+// env.askLimiter stub may be provided.
+export async function allowAsk(env, ip, scope = 'ask') {
+  if (env?.askLimiter) return env.askLimiter.check(ip);
+  if (typeof caches === 'undefined') return true;
+
+  const key = new Request(`https://ask-rate-limit.invalid/${scope}:${encodeURIComponent(ip || 'unknown')}`);
+  const cached = await caches.default.match(key);
+  const state = cached ? await cached.json().catch(() => null) : null;
+  if (state && Number(state.count) >= askLimit(env)) return false;
+  await caches.default.put(
+    key,
+    new Response(JSON.stringify({ count: (state ? Number(state.count) : 0) + 1 }), {
+      headers: { 'Cache-Control': `max-age=${askWindowSeconds(env)}`, 'Content-Type': 'application/json' },
+    }),
+  );
+  return true;
+}
+
+async function askViaSite(env, { query, ip, fetchImpl }) {
+  const secret = typeof env?.ASSISTANT_SERVICE_SECRET === 'string' ? env.ASSISTANT_SERVICE_SECRET.trim() : '';
+  if (!secret) return { configured: false };
+
+  const response = await fetchImpl(CHAT_ENDPOINT, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${secret}`,
+      'X-Client-IP': ip || 'unknown',
+    },
+    body: JSON.stringify({ messages: [{ role: 'user', content: query }] }),
+  });
+  if (!response.ok) {
+    return { configured: true, status: response.status };
+  }
+  const payload = await response.json().catch(() => null);
+  if (payload?.action === 'answer' && typeof payload.text === 'string' && payload.text.trim()) {
+    return { configured: true, answer: payload.text.trim(), sources: Array.isArray(payload.sources) ? payload.sources : [] };
+  }
+  if (payload?.action === 'contact_form') {
+    return { configured: true, contact: true };
+  }
+  return { configured: true, status: 502 };
+}
+
+// The site chat endpoint returns site-relative source paths
+// ("/insights/…/"); accept both shapes and always emit absolute
+// chinaready.co URLs for programmatic clients.
+function citationFromSource(source) {
+  const raw = typeof source?.url === 'string' ? source.url.trim() : '';
+  let url = null;
+  if (/^https:\/\/chinaready\.co(\/|$)/.test(raw)) {
+    url = raw;
+  } else if (/^\/[a-z0-9-]/i.test(raw)) {
+    url = `https://chinaready.co${raw}`;
+  }
+  if (!url) return null;
+  const title = typeof source.title === 'string' && source.title.trim() ? source.title.trim() : url;
+  return { title, url };
+}
+
+export async function callAsk(args, ctx = {}) {
+  const { env, ip, fetchImpl = fetch } = ctx;
+  const query = String(args?.query ?? '').trim();
+  if (!query || query.length > ASK_QUERY_MAX) {
+    return { isError: true, content: [{ type: 'text', text: `query must be a non-empty string of at most ${ASK_QUERY_MAX} characters.` }] };
+  }
+
+  if (!(await allowAsk(env, ip))) {
+    return { isError: true, content: [{ type: 'text', text: 'Rate limit reached. Try again in a few minutes.' }] };
+  }
+
+  const outcome = await askViaSite(env, { query, ip, fetchImpl });
+  if (!outcome.configured) {
+    return { isError: true, content: [{ type: 'text', text: 'Generation is not configured on this deployment (missing ASSISTANT_SERVICE_SECRET); use `search` instead.' }] };
+  }
+  if (outcome.contact) {
+    return {
+      content: [{ type: 'text', text: 'No chinaready.co page matches this question confidently enough to answer. Try `search` for raw excerpts, or ask Chinaready directly at https://chinaready.co/contact/.' }],
+      structuredContent: { answer: null, citations: [], matched: false },
+    };
+  }
+  if (!outcome.answer) {
+    return { isError: true, content: [{ type: 'text', text: `Answer generation unavailable (HTTP ${outcome.status ?? 500}). Retry shortly or use \`search\`.` }] };
+  }
+
+  const citations = outcome.sources
+    .map(citationFromSource)
+    .filter(Boolean)
+    .slice(0, ASK_MAX_CITATIONS);
+  const sourceLines = citations.map((c, i) => `${i + 1}. ${c.title} — ${c.url}`);
+  return {
+    content: [{ type: 'text', text: `${outcome.answer}\n\nSources:\n${sourceLines.join('\n')}` }],
+    structuredContent: { answer: outcome.answer, citations, matched: true },
+  };
 }
 
 export function callListTopics() {
@@ -197,7 +344,9 @@ export async function callGetArticle(args, fetchImpl = fetch) {
 
 const SUPPORTED_PROTOCOL = ['2025-06-18', '2025-03-26', '2024-11-05'];
 
-export async function handleRpcMessage(message, fetchImpl = fetch) {
+export async function handleRpcMessage(message, ctx = fetch) {
+  // Back-compat: existing callers pass a fetch impl as the second argument.
+  const context = typeof ctx === 'function' ? { fetchImpl: ctx } : ctx;
   if (!message || typeof message !== 'object') {
     return { jsonrpc: '2.0', id: null, error: { code: -32600, message: 'Invalid Request' } };
   }
@@ -224,9 +373,10 @@ export async function handleRpcMessage(message, fetchImpl = fetch) {
       const name = params?.name;
       let result;
       try {
-        if (name === 'search') result = await callSearch(params?.arguments, fetchImpl);
+        if (name === 'ask') result = await callAsk(params?.arguments, context);
+        else if (name === 'search') result = await callSearch(params?.arguments, context.fetchImpl);
         else if (name === 'list_topics') result = callListTopics();
-        else if (name === 'get_article') result = await callGetArticle(params?.arguments, fetchImpl);
+        else if (name === 'get_article') result = await callGetArticle(params?.arguments, context.fetchImpl);
         else result = { isError: true, content: [{ type: 'text', text: `Unknown tool: ${name}` }] };
       } catch {
         result = { isError: true, content: [{ type: 'text', text: 'Tool execution failed; retry shortly.' }] };
@@ -313,15 +463,16 @@ export default {
 
     if (Array.isArray(body)) {
       const replies = [];
+      const context = { env, ip: request.headers.get('cf-connecting-ip') || 'unknown', fetchImpl: fetch };
       for (const message of body) {
-        const reply = await handleRpcMessage(message);
+        const reply = await handleRpcMessage(message, context);
         writeUsage(env, usageLabel(message, reply), ua);
         if (reply) replies.push(reply);
       }
       return replies.length ? json(replies) : new Response(null, { status: 202, headers: CORS_HEADERS });
     }
 
-    const reply = await handleRpcMessage(body);
+    const reply = await handleRpcMessage(body, { env, ip: request.headers.get('cf-connecting-ip') || 'unknown', fetchImpl: fetch });
     writeUsage(env, usageLabel(body, reply), ua);
     return reply ? json(reply) : new Response(null, { status: 202, headers: CORS_HEADERS });
   },
