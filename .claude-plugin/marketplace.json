@@ -1,0 +1,15 @@
+{
+  "name": "chinaready",
+  "owner": {
+    "name": "Chinaready",
+    "url": "https://chinaready.co"
+  },
+  "plugins": [
+    {
+      "name": "chinaready",
+      "source": "./",
+      "description": "Chinaready China Market-Entry Search — read-only MCP server over chinaready.co: ICP filing and licensing, app-store publishing, China cloud regions, payments, compliance. Every answer cites its source URL.",
+      "version": "1.0.1"
+    }
+  ]
+}
