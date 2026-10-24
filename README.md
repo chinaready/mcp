@@ -2,6 +2,8 @@
 
 [![Chinaready China Market-Entry Search MCP connector – tool definition quality and endpoint health on Glama](https://glama.ai/mcp/connectors/co.chinaready/search/badges/score.svg)](https://glama.ai/mcp/connectors/co.chinaready/search)
 
+[![Listed on ClaudePluginHub](https://www.claudepluginhub.com/badge/chinaready-chinaready)](https://www.claudepluginhub.com/plugins/chinaready-chinaready?ref=badge)
+
 <a href="https://www.producthunt.com/products/chinaready-mcp?embed=true&amp;utm_source=badge-featured&amp;utm_medium=badge&amp;utm_campaign=badge-chinaready-mcp"><picture><source media="(prefers-color-scheme: dark)" srcset="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1281511&amp;theme=dark"><img alt="Chinaready MCP - Let your AI cite real sources on China market entry | Product Hunt" width="250" height="54" src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=1281511&amp;theme=light"></picture></a>
 
 Remote MCP server for **[chinaready.co](https://chinaready.co)** — the practical guide for Western SaaS, app, and game teams entering Mainland China. Ask about ICP filing and licensing, app-store and game publishing, China cloud regions (AWS China, Azure China, Alibaba Cloud), payments, and compliance; every answer cites its source page.
@@ -64,7 +66,9 @@ npm run deploy  # wrangler deploy (needs your Cloudflare auth)
 
 The server is a thin stateless proxy over Chinaready's public retrieval API
 (`search.chinaready.co`); it stores nothing and needs no environment
-variables. `get_article` only fetches `chinaready.co` pages it has validated
+variables. Outbound calls go only to `search.chinaready.co` (retrieval) and
+`chinaready.co` (article fetch) — no other network destinations.
+`get_article` only fetches `chinaready.co` pages it has validated
 as safe site paths.
 
 ## Usage tracking
