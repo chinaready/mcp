@@ -9,7 +9,7 @@
       "name": "chinaready",
       "source": "./",
       "description": "AI assistants hallucinate Chinese regulatory details — ICP filing, app-store rules, China cloud regions, payments. This MCP server gives them a citable source: read-only search over chinaready.co's practical guides, every answer citing its source URL.",
-      "version": "1.0.1"
+      "version": "2.0.0"
     }
   ]
 }

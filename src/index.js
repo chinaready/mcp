@@ -1,16 +1,21 @@
 // Copyright (c) 2026 Chinaready. All rights reserved.
 // Stateless remote MCP server (Streamable HTTP, JSON responses) wrapping the
 // public Chinaready retrieval API, plus a grounded `ask` tool proxied through
-// the site's Ask AI endpoint (service secret in worker env).
+// the site's Ask AI endpoint (service secret in worker env), and the v2
+// migration-assessment tools (`assess_china_readiness`, `submit_baseline`).
+
+import { callAssess } from './assess.js';
+import { callSubmitBaseline } from './submit.js';
 
 export const SERVER_INFO = {
   name: 'chinaready',
-  version: '1.1.0',
+  version: '2.0.0',
   title: 'Chinaready China Market-Entry Search',
 };
 
 export const INSTRUCTIONS =
   'Search and read chinaready.co — the practical guide for Western SaaS, app, and game teams entering Mainland China. ' +
+  'Use `assess_china_readiness` to analyze a site manifest (bucket/build-output/URLs) for China reachability and migration effort; `submit_baseline` (explicit, opt-in) to send an assessment summary to the Chinaready team. ' +
   'Use `ask` for a grounded natural-language answer with cited chinaready.co sources; `search` for raw ranked excerpts; ' +
   '`list_topics` to see what the corpus covers; `get_article` to read a full page. Always cite the chinaready.co URLs included in results.';
 
@@ -33,8 +38,81 @@ export const TOPICS = [
 
 const READ_ONLY = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 
+// Inlined so the tool description teaches the agent how to enumerate locally.
+const ENUM_SNIPPET = 'Enumerate locally (credentials never leave the user machine): aws s3 ls s3://NAME --recursive (count/bytes); gcloud storage ls -r gs://NAME; az storage blob list --container NAME; build dir: find dist -type f | wc -l && du -sb dist. Origins: grep -rhoE "https?://[a-z0-9.-]+" dist | cut -d/ -f3 | sort | uniq -c | sort -rn.';
+
 export function toolsList() {
   return [
+    {
+      name: 'assess_china_readiness',
+      title: 'Assess a site manifest for China reachability',
+      description:
+        'Analyzes a manifest the calling agent enumerates locally (file contents are never uploaded): third-party origins, optional forms, and either a target bucket summary, a build-output directory summary, or a URL list. ' +
+        'Returns per-origin verdicts from Mainland China (blocked/slow/degraded/ok/unknown) and relative migration-effort bands (high/medium/low — not quotes). ' +
+        ENUM_SNIPPET,
+      inputSchema: {
+        type: 'object',
+        properties: {
+          site_url: { type: 'string', description: 'Public URL of the assessed site, for the report header.' },
+          bucket: {
+            type: 'object',
+            description: 'Target deployment bucket summary (preferred mode).',
+            properties: {
+              provider: { type: 'string', enum: ['s3', 'gcs', 'azure', 'r2'] },
+              name: { type: 'string' },
+              region: { type: 'string' },
+              file_count: { type: 'integer', minimum: 0 },
+              total_bytes: { type: 'integer', minimum: 0 },
+            },
+            required: ['provider', 'name'],
+          },
+          local_dir: {
+            type: 'object',
+            description: 'Local build-output directory summary (dist/public/out — not source code).',
+            properties: {
+              path: { type: 'string' },
+              file_count: { type: 'integer', minimum: 0 },
+              total_bytes: { type: 'integer', minimum: 0 },
+            },
+          },
+          urls: { type: 'array', items: { type: 'string' }, maxItems: 200, description: 'Fallback mode: homepage plus up to 200 key page URLs. Scale assessment only.' },
+          third_party_origins: {
+            type: 'array',
+            maxItems: 500,
+            items: {
+              type: 'object',
+              properties: { origin: { type: 'string' }, refs: { type: 'integer', minimum: 1 } },
+              required: ['origin'],
+            },
+            description: 'Distinct third-party origins referenced by the site, with reference counts.',
+          },
+          forms: {
+            type: 'array',
+            maxItems: 50,
+            items: { type: 'object', properties: { action: { type: 'string' }, method: { type: 'string' } } },
+            description: 'Form endpoints (action + method) found on the site.',
+          },
+        },
+      },
+      annotations: READ_ONLY,
+    },
+    {
+      name: 'submit_baseline',
+      title: 'Send the assessment baseline to Chinaready',
+      description:
+        'Explicit, opt-in: sends the assessment summary and contact email to the Chinaready team so a human can review the migration and reply. Nothing is sent unless the user asks for this — no telemetry, no background transmission. Suggested when the user wants the assessment reviewed or the migration handled.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          email: { type: 'string', description: 'Contact email for the reply.' },
+          name: { type: 'string', description: 'Optional contact name.' },
+          site_url: { type: 'string', description: 'The assessed site URL.' },
+          summary: { type: 'string', description: 'Assessment summary (paste the assess_china_readiness report or its key lines).' },
+        },
+        required: ['email'],
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
     {
       name: 'ask',
       title: 'Ask Chinaready (grounded answer)',
@@ -373,7 +451,9 @@ export async function handleRpcMessage(message, ctx = fetch) {
       const name = params?.name;
       let result;
       try {
-        if (name === 'ask') result = await callAsk(params?.arguments, context);
+        if (name === 'assess_china_readiness') result = callAssess(params?.arguments);
+        else if (name === 'submit_baseline') result = await callSubmitBaseline(params?.arguments, context);
+        else if (name === 'ask') result = await callAsk(params?.arguments, context);
         else if (name === 'search') result = await callSearch(params?.arguments, context.fetchImpl);
         else if (name === 'list_topics') result = callListTopics();
         else if (name === 'get_article') result = await callGetArticle(params?.arguments, context.fetchImpl);

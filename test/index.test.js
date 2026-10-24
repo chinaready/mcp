@@ -23,19 +23,24 @@ describe('initialize', () => {
 });
 
 describe('tools/list', () => {
-  it('exposes three read-only tools, each with a title and annotations', async () => {
+  it('exposes six tools, each with a title and annotations', async () => {
     const reply = await rpc('tools/list', {});
     const tools = reply.result.tools;
-    expect(tools.map((t) => t.name).sort()).toEqual(['ask', 'get_article', 'list_topics', 'search']);
+    expect(tools.map((t) => t.name).sort()).toEqual(['ask', 'assess_china_readiness', 'get_article', 'list_topics', 'search', 'submit_baseline']);
     for (const tool of tools) {
       expect(tool.title, `${tool.name} title`).toBeTruthy();
-      expect(tool.annotations, `${tool.name} annotations`).toMatchObject({ readOnlyHint: true, destructiveHint: false });
+      expect(tool.annotations, `${tool.name} annotations`).toMatchObject({ destructiveHint: false });
       expect(tool.inputSchema.type).toBe('object');
     }
+    // Knowledge tools are read-only; only submit_baseline writes (explicitly).
+    for (const tool of tools.filter((t) => t.name !== 'submit_baseline')) {
+      expect(tool.annotations.readOnlyHint, `${tool.name} readOnlyHint`).toBe(true);
+    }
+    expect(reply.result.tools.find((t) => t.name === 'submit_baseline').annotations.readOnlyHint).toBe(false);
   });
 
   it('module export matches the RPC result', () => {
-    expect(toolsList()).toHaveLength(4);
+    expect(toolsList()).toHaveLength(6);
   });
 });
 
@@ -214,7 +219,7 @@ describe('HTTP surface', () => {
     }));
     expect(res.status).toBe(200);
     const payload = await res.json();
-    expect(payload.result.tools).toHaveLength(4);
+    expect(payload.result.tools).toHaveLength(6);
 
     const note = await worker.fetch(new Request('https://mcp.chinaready.co/mcp', {
       method: 'POST',

@@ -3,6 +3,32 @@
 All notable changes to the Chinaready MCP server are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
+## [2.0.0] — 2026-10-24
+
+### Added
+
+- **`assess_china_readiness` tool** — analyzes a site manifest the calling
+  agent enumerates locally (target bucket summary, build-output directory
+  summary, or URL-list fallback; third-party origins with reference counts;
+  optional form endpoints) and returns per-origin China-reachability verdicts
+  (blocked/slow/degraded/ok/unknown) plus relative migration-effort bands
+  (high/medium/low — explicitly not quotes). The server never fetches user
+  URLs or bucket contents; file contents are never uploaded.
+- **`submit_baseline` tool** — explicit, opt-in lead submission (email +
+  site URL + assessment summary) to the Chinaready team via the new
+  `POST /api/contact/mcp` site endpoint (shared-secret auth). No telemetry,
+  no background transmission; nothing is sent unless invoked.
+- **China-access knowledge base** (`src/data/china-access-knowledge.json`) —
+  40 curated origin verdicts distilled from published chinaready.co
+  insights/handbooks, with as-of date, per-origin fix guidance, and source
+  article links. Updated on the site's reachability-test publication cadence;
+  no live probing.
+
+### Changed
+
+- Version bumped to 2.0.0 (six tools; two new are additive, existing four
+  unchanged). Tool-list and instructions updated.
+
 ## [1.1.0] — 2026-10-22
 
 ### Added
