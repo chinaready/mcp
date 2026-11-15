@@ -170,6 +170,33 @@ function askWindowSeconds(env) {
 // Per client-IP sliding-window counter over the Workers Cache API — same
 // mechanism as the site assistant. In tests (no `caches` global) an
 // env.askLimiter stub may be provided.
+function timingSafeEqualString(a, b) {
+  const left = String(a);
+  const right = String(b);
+  if (left.length !== right.length) return false;
+  let out = 0;
+  for (let i = 0; i < left.length; i += 1) out |= left.charCodeAt(i) ^ right.charCodeAt(i);
+  return out === 0;
+}
+
+// The China app reaches this worker through the wb.launchready.cn proxy on
+// the Beijing ECS. That proxy is a trusted service caller: it strips any
+// client-supplied pair and injects X-Client-IP + X-Trusted-Proxy (shared
+// secret, env TRUSTED_PROXY_SECRET), so the per-IP ask limit keys on the
+// real user instead of the ECS egress IP (which would otherwise share one
+// 30-req/10-min bucket across every mainland user). Timing-safe compare,
+// same shape as the site's trusted-caller check; any other caller keeps
+// the Cloudflare edge IP.
+export function resolveRequestIp(request, env) {
+  const secret = typeof env?.TRUSTED_PROXY_SECRET === 'string' ? env.TRUSTED_PROXY_SECRET.trim() : '';
+  const claimed = (request.headers.get('x-trusted-proxy') || '').trim();
+  if (secret && claimed && timingSafeEqualString(secret, claimed)) {
+    const forwarded = (request.headers.get('x-client-ip') || '').trim();
+    if (forwarded) return forwarded;
+  }
+  return request.headers.get('cf-connecting-ip') || 'unknown';
+}
+
 export async function allowAsk(env, ip, scope = 'ask') {
   if (env?.askLimiter) return env.askLimiter.check(ip);
   if (typeof caches === 'undefined') return true;
@@ -463,7 +490,7 @@ export default {
 
     if (Array.isArray(body)) {
       const replies = [];
-      const context = { env, ip: request.headers.get('cf-connecting-ip') || 'unknown', fetchImpl: fetch };
+      const context = { env, ip: resolveRequestIp(request, env), fetchImpl: fetch };
       for (const message of body) {
         const reply = await handleRpcMessage(message, context);
         writeUsage(env, usageLabel(message, reply), ua);
@@ -472,7 +499,7 @@ export default {
       return replies.length ? json(replies) : new Response(null, { status: 202, headers: CORS_HEADERS });
     }
 
-    const reply = await handleRpcMessage(body, { env, ip: request.headers.get('cf-connecting-ip') || 'unknown', fetchImpl: fetch });
+    const reply = await handleRpcMessage(body, { env, ip: resolveRequestIp(request, env), fetchImpl: fetch });
     writeUsage(env, usageLabel(body, reply), ua);
     return reply ? json(reply) : new Response(null, { status: 202, headers: CORS_HEADERS });
   },
